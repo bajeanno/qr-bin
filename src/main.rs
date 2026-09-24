@@ -23,6 +23,8 @@ use std::{
 use tokio::sync::mpsc;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
+const STYLE_CSS: &str = include_str!("../static/style.css");
+const APP_JS: &str = include_str!("../static/app.js");
 const MAX_QR_BYTES: usize = 1500;
 
 type PeerId = u64;
@@ -90,6 +92,8 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/style.css", get(style_css))
+        .route("/app.js", get(app_js))
         .route("/qr.svg", get(qr_svg))
         .route("/ws", get(ws_handler))
         .with_state(state);
@@ -114,6 +118,22 @@ async fn index(Query(q): Query<PageQuery>) -> Html<&'static str> {
     // Same HTML for both roles; the page branches on ?role=writer.
     let _ = (&q.role, &q.room);
     Html(INDEX_HTML)
+}
+
+async fn style_css() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/css")],
+        STYLE_CSS,
+    )
+        .into_response()
+}
+
+async fn app_js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript")],
+        APP_JS,
+    )
+        .into_response()
 }
 
 async fn qr_svg(Query(q): Query<QrQuery>) -> Response {
