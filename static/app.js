@@ -86,8 +86,6 @@
     room = uid();
     var base = location.pathname.replace(/\/+$/, "");
     var writerUrl = location.origin + base + "?role=writer&room=" + encodeURIComponent(room);
-    var short = writerUrl.length > 120 ? writerUrl.slice(0, 120) + "…" : writerUrl;
-    el.link.textContent = short;
     el.hint.textContent = "Scan this code with your phone to open the writer. Type on your phone and it appears here instantly.";
     el.qr.src = "/qr.svg?data=" + encodeURIComponent(writerUrl);
     el.qr.onerror = function () { el.hint.textContent = "Could not load QR image."; };
