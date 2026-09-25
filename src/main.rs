@@ -1,17 +1,16 @@
 use axum::{
+    Router,
     extract::{
-        Query,
-        State,
+        Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
-    routing::get,
-    Router,
+    routing::{any, get},
 };
 use futures_util::{SinkExt, StreamExt};
-use qrcode::render::svg;
 use qrcode::QrCode;
+use qrcode::render::svg;
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -30,10 +29,9 @@ const MAX_QR_BYTES: usize = 1500;
 type PeerId = u64;
 type PeerTx = mpsc::UnboundedSender<Message>;
 
-#[derive(Clone)]
 struct AppState {
-    rooms: Arc<tokio::sync::Mutex<HashMap<String, Room>>>,
-    next_id: Arc<AtomicU64>,
+    rooms: tokio::sync::Mutex<HashMap<String, Room>>,
+    next_id: AtomicU64,
 }
 
 struct Room {
@@ -86,8 +84,8 @@ struct OutMsg {
 #[tokio::main]
 async fn main() {
     let state = AppState {
-        rooms: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        next_id: Arc::new(AtomicU64::new(1)),
+        rooms: tokio::sync::Mutex::new(HashMap::new()),
+        next_id: AtomicU64::new(1),
     };
 
     let app = Router::new()
@@ -95,8 +93,8 @@ async fn main() {
         .route("/style.css", get(style_css))
         .route("/app.js", get(app_js))
         .route("/qr.svg", get(qr_svg))
-        .route("/ws", get(ws_handler))
-        .with_state(state);
+        .route("/ws", any(ws_handler))
+        .with_state(Arc::new(state));
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -108,7 +106,9 @@ async fn main() {
     if let Ok(ip) = local_ip_address::local_ip() {
         println!("LAN:   http://{ip}:{port}");
     }
-    println!("Expose this port to the internet (reverse proxy / tunnel) so your phone can reach it.");
+    println!(
+        "Expose this port to the internet (reverse proxy / tunnel) so your phone can reach it."
+    );
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -121,19 +121,11 @@ async fn index(Query(q): Query<PageQuery>) -> Html<&'static str> {
 }
 
 async fn style_css() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/css")],
-        STYLE_CSS,
-    )
-        .into_response()
+    ([(header::CONTENT_TYPE, "text/css")], STYLE_CSS).into_response()
 }
 
 async fn app_js() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/javascript")],
-        APP_JS,
-    )
-        .into_response()
+    ([(header::CONTENT_TYPE, "text/javascript")], APP_JS).into_response()
 }
 
 async fn qr_svg(Query(q): Query<QrQuery>) -> Response {
@@ -148,17 +140,13 @@ async fn qr_svg(Query(q): Query<QrQuery>) -> Response {
         .min_dimensions(320, 320)
         .quiet_zone(true)
         .build();
-    (
-        [(header::CONTENT_TYPE, "image/svg+xml")],
-        svg,
-    )
-        .into_response()
+    ([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response()
 }
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
 ) -> Response {
     if q.room.is_empty() || q.room.len() > 64 {
         return (StatusCode::BAD_REQUEST, "bad room").into_response();
@@ -171,22 +159,23 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, q.room, role, state))
 }
 
-async fn handle_socket(socket: WebSocket, room_id: String, role: Role, state: AppState) {
+async fn handle_socket(socket: WebSocket, room_id: String, role: Role, state: Arc<AppState>) {
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
     // Register and grab a snapshot of the room text.
     let snapshot = {
         let mut rooms = state.rooms.lock().await;
-        let room = rooms
-            .entry(room_id.clone())
-            .or_insert_with(|| Room {
-                last_text: String::new(),
-                peers: HashMap::new(),
-            });
+        let room = rooms.entry(room_id.clone()).or_insert_with(|| Room {
+            last_text: String::new(),
+            peers: HashMap::new(),
+        });
         room.peers.insert(
             id,
-            Peer { _role: role, tx: tx.clone() },
+            Peer {
+                _role: role,
+                tx: tx.clone(),
+            },
         );
         room.last_text.clone()
     };
@@ -195,8 +184,7 @@ async fn handle_socket(socket: WebSocket, room_id: String, role: Role, state: Ap
 
     // Deliver current text so a late joiner is up to date.
     if !snapshot.is_empty() {
-let _ = tx.send(
-        Message::Text(
+        let _ = tx.send(Message::Text(
             serde_json::to_string(&OutMsg {
                 kind: "set",
                 text: Some(snapshot),
@@ -204,8 +192,7 @@ let _ = tx.send(
             })
             .unwrap_or_default()
             .into(),
-        ),
-    );
+        ));
     }
 
     // Reader: forward incoming text messages to every other peer in the room.
